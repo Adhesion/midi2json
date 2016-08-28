@@ -160,7 +160,7 @@ readStream.on("readable", function() {
     readStream.setEncoding("ascii");
 
     var header = readStream.read(4);
-    // We can get a readable event at the end, so if we read and got null,
+    // We can get a readable event at the end of the file, so if we read and got null,
     // that's probably what happened, so we're done
     if (!header) {
         return;
@@ -217,6 +217,6 @@ readStream.on("end", function() {
             }
         }
     }
-
-    console.log(JSON.stringify(outputDict, null, 4));
+    
+    fs.writeFileSync(process.argv[3], JSON.stringify(outputDict, null, 4));
 });
