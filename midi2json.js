@@ -4,6 +4,7 @@
 
 var headerChunk = "MThd";
 var trackChunk = "MTrk";
+var tempTrackName = "";
 // tempo is represented as microseconds per quarter note
 // this is 120bpm, which is the default for MIDI with unspecified tempo
 var tempo = 500000.0;
@@ -64,7 +65,7 @@ function readTrack(readStream, iTrack) {
 
     var trackLength = bufferToNumber(readStream.read(4));
     var totalDeltaTime = 0;
-    var trackName = "";
+    tempTrackName = "";
     var trackNameDefault = "Track " + iTrack;
     var trackData = [];
 
@@ -78,76 +79,102 @@ function readTrack(readStream, iTrack) {
         var headerByte = bufferToNumber(header);
         bytesRead++;
 
-        if ((headerByte & 0xF0) == 0x80) {
-            // note off
-            var note = bufferToNumber(readStream.read(1));
-            var velocity = bufferToNumber(readStream.read(1));
-            bytesRead += 2;
-
-            var noteData = { "type" : "noteOff", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
-            trackData.push(noteData);
-        }
-        else if ((headerByte & 0xF0) == 0x90) {
-            // note on
-            var note = bufferToNumber(readStream.read(1));
-            var velocity = bufferToNumber(readStream.read(1));
-            bytesRead += 2;
-
-            var noteData = { "type" : "noteOn", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
-            trackData.push(noteData);
-        }
-        else if (headerByte == 0xFF) {
-            // meta event
-            var metaHeader = bufferToNumber(readStream.read(1));
-            bytesRead++;
-            var metaLengthRet = readVariableLength(readStream);
-            var metaLength = metaLengthRet[0];
-            bytesRead += metaLengthRet[1];
-
-            if (metaLength > 0) {
-                var metaData = readStream.read(metaLength);
-                var metaValue = bufferToNumber(metaData);
-                bytesRead += metaLength;
-
-                if (metaHeader == 0x03) {
-                    // track/sequence name
-                    if (metaValue) {
-                        trackName = metaData.toString("ascii");
-                    }
-                }
-                else if (metaHeader == 0x51) {
-                    // tempo in microseconds per quarter note
-                    tempo = metaValue;
-                }
-                else if (metaHeader == 0x58) {
-                    // time sig
-                }
-                else {
-                    // other meta, unsupported
-                }
-            }
-            else {
-                if (metaHeader == 0x2F) {
-                    // track end, has no value
-                    var trackEndData = { "type" : "trackEnd", "time": totalDeltaTime };
-                    trackData.push(trackEndData);
-                }
-            }
+        if (headerByte == 0xFF) {
+            bytesRead += readMetaEvent(readStream, trackData, totalDeltaTime);
         }
         else if (headerByte == 0xF0) {
-            // sysex?
-            var length = readVariableLength(readStream);
-            readStream.read(length[0]);
-            bytesRead += length[0] + length[1];
+            bytesRead += readSysex(readStream, trackData, totalDeltaTime);
+        }
+        else {
+            bytesRead += readEvent(readStream, trackData, totalDeltaTime, headerByte);
         }
 
         trackLength -= bytesRead;
     }
 
-    if (!trackName) {
-        trackName = trackNameDefault;
+    if (!tempTrackName) {
+        tempTrackName = trackNameDefault;
     }
-    outputDict[trackName] = trackData;
+    outputDict[tempTrackName] = trackData;
+}
+
+function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
+    var bytesRead = 0;
+
+    if ((headerByte & 0xF0) == 0x80) {
+        // note off
+        var note = bufferToNumber(readStream.read(1));
+        var velocity = bufferToNumber(readStream.read(1));
+        bytesRead += 2;
+
+        var noteData = { "type" : "noteOff", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
+        trackData.push(noteData);
+    }
+    else if ((headerByte & 0xF0) == 0x90) {
+        // note on
+        var note = bufferToNumber(readStream.read(1));
+        var velocity = bufferToNumber(readStream.read(1));
+        bytesRead += 2;
+
+        var noteData = { "type" : "noteOn", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
+        trackData.push(noteData);
+    }
+
+    return bytesRead;
+}
+
+function readMetaEvent(readStream, trackData, totalDeltaTime) {
+    var bytesRead = 0;
+
+    // meta event
+    var metaHeader = bufferToNumber(readStream.read(1));
+    bytesRead++;
+    var metaLengthRet = readVariableLength(readStream);
+    var metaLength = metaLengthRet[0];
+    bytesRead += metaLengthRet[1];
+
+    if (metaLength > 0) {
+        var metaData = readStream.read(metaLength);
+        var metaValue = bufferToNumber(metaData);
+        bytesRead += metaLength;
+
+        if (metaHeader == 0x03) {
+            // track/sequence name
+            if (metaValue) {
+                tempTrackName = metaData.toString("ascii");
+            }
+        }
+        else if (metaHeader == 0x51) {
+            // tempo in microseconds per quarter note
+            tempo = metaValue;
+        }
+        else if (metaHeader == 0x58) {
+            // time sig
+        }
+        else {
+            // other meta, unsupported
+        }
+    }
+    else {
+        if (metaHeader == 0x2F) {
+            // track end, has no value
+            var trackEndData = { "type" : "trackEnd", "time": totalDeltaTime };
+            trackData.push(trackEndData);
+        }
+    }
+
+    return bytesRead;
+}
+
+function readSysex(readStream, trackData, totalDeltaTime) {
+    var bytesRead = 0;
+
+    // read our sysex from the stream, we don't put it in the track data for now
+    var length = readVariableLength(readStream);
+    readStream.read(length[0]);
+    bytesRead += length[0] + length[1];
+
+    return bytesRead;
 }
 
 if (process.argv.length !== 4) {
@@ -217,6 +244,6 @@ readStream.on("end", function() {
             }
         }
     }
-    
+
     fs.writeFileSync(process.argv[3], JSON.stringify(outputDict, null, 4));
 });
