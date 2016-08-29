@@ -100,8 +100,9 @@ function readTrack(readStream, iTrack) {
 
 function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     var bytesRead = 0;
+    var headerMasked = headerByte & 0xF0;
 
-    if ((headerByte & 0xF0) == 0x80) {
+    if (headerMasked == 0x80) {
         // note off
         var note = bufferToNumber(readStream.read(1));
         var velocity = bufferToNumber(readStream.read(1));
@@ -110,13 +111,58 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
         var noteData = { "type" : "noteOff", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
         trackData.push(noteData);
     }
-    else if ((headerByte & 0xF0) == 0x90) {
+    else if (headerMasked == 0x90) {
         // note on
         var note = bufferToNumber(readStream.read(1));
         var velocity = bufferToNumber(readStream.read(1));
         bytesRead += 2;
 
         var noteData = { "type" : "noteOn", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
+        trackData.push(noteData);
+    }
+    else if (headerMasked == 0xA0) {
+        // poly aftertouch
+        var note = bufferToNumber(readStream.read(1));
+        var pressure = bufferToNumber(readStream.read(1));
+        bytesRead += 2;
+
+        var noteData = { "type" : "polyAftertouch", "time" : totalDeltaTime, "note" : note, "pressure" : pressure };
+        trackData.push(noteData);
+    }
+    else if (headerMasked == 0xB0) {
+        // CC
+        var cc = bufferToNumber(readStream.read(1));
+        var value = bufferToNumber(readStream.read(1));
+        bytesRead += 2;
+
+        var noteData = { "type" : "CC", "time" : totalDeltaTime, "CC" : cc, "value" : value };
+        trackData.push(noteData);
+    }
+    else if (headerMasked == 0xC0) {
+        // program change
+        var program = bufferToNumber(readStream.read(1));
+        bytesRead += 1;
+
+        var noteData = { "type" : "programChange", "time" : totalDeltaTime, "program" : program };
+        trackData.push(noteData);
+    }
+    else if (headerMasked == 0xD0) {
+        // aftertouch
+        var pressure = bufferToNumber(readStream.read(1));
+        bytesRead += 1;
+
+        var noteData = { "type" : "aftertouch", "time" : totalDeltaTime, "pressure" : pressure };
+        trackData.push(noteData);
+    }
+    else if (headerMasked == 0xE0) {
+        // pitchwheel
+        var lsb = bufferToNumber(readStream.read(1));
+        var msb = bufferToNumber(readStream.read(1));
+        bytesRead += 2;
+
+        var pitchwheelValue = (msb << 7) | lsb;
+
+        var noteData = { "type" : "pitchwheel", "time" : totalDeltaTime, "pitchwheel" : pitchwheelValue };
         trackData.push(noteData);
     }
 
