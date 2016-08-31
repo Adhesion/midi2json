@@ -10,6 +10,7 @@ var tempTrackName = "";
 var tempo = 500000.0;
 var division = 0;
 var outputDict = {};
+var runningStatus = null;
 var fs = require('fs');
 
 /*
@@ -31,7 +32,8 @@ function readVariableLength(readStream) {
     var retVal = 0;
     var continueMask = 0x80;
     var valueMask = 0x7F;
-    var byte = bufferToNumber(readStream.read(1));
+    var buf = readStream.read(1);
+    var byte = bufferToNumber(buf);
     var byteCount = 0;
 
     // While we still have a 1 in the most significant bit, keep reading
@@ -39,7 +41,8 @@ function readVariableLength(readStream) {
     while ((byte & continueMask) && byteCount < 3) {
         retVal <<= 7;
         retVal |= byte & valueMask;
-        byte = bufferToNumber(readStream.read(1));
+        var inbuf = readStream.read(1);
+        byte = bufferToNumber(inbuf);
         byteCount++;
     }
 
@@ -82,8 +85,8 @@ function readTrack(readStream, iTrack) {
         if (headerByte == 0xFF) {
             bytesRead += readMetaEvent(readStream, trackData, totalDeltaTime);
         }
-        else if (headerByte == 0xF0) {
-            bytesRead += readSysex(readStream, trackData, totalDeltaTime);
+        else if ((headerByte & 0xF0) == 0xF0) {
+            bytesRead += readSysex(readStream, trackData, totalDeltaTime, headerByte);
         }
         else {
             bytesRead += readEvent(readStream, trackData, totalDeltaTime, headerByte);
@@ -100,65 +103,85 @@ function readTrack(readStream, iTrack) {
 
 function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     var bytesRead = 0;
-    var headerMasked = headerByte & 0xF0;
+    var status = headerByte;
+    var usedRunningStatus = false;
+    var firstDataByte = null;
+
+    if (headerByte < 0x80) {
+        // If we got a data byte, assume it's running status (ie the same as a previously received event)
+        // therefore our "header" is actually our first data byte
+        if (runningStatus) {
+            firstDataByte = headerByte;
+            status = runningStatus;
+        }
+        else {
+            console.error("Unknown event 0x" + headerByte.toString(16) + " and no running status");
+            return 0;
+        }
+    }
+
+    var headerMasked = status & 0xF0;
+
+    if (!firstDataByte) {
+        firstDataByte = bufferToNumber(readStream.read(1));
+        bytesRead++;
+    }
 
     if (headerMasked == 0x80) {
         // note off
-        var note = bufferToNumber(readStream.read(1));
+        var note = firstDataByte;
         var velocity = bufferToNumber(readStream.read(1));
-        bytesRead += 2;
+        bytesRead++;
 
         var noteData = { "type" : "noteOff", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
         trackData.push(noteData);
     }
     else if (headerMasked == 0x90) {
         // note on
-        var note = bufferToNumber(readStream.read(1));
+        var note = firstDataByte;
         var velocity = bufferToNumber(readStream.read(1));
-        bytesRead += 2;
+        bytesRead++;
 
         var noteData = { "type" : "noteOn", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
         trackData.push(noteData);
     }
     else if (headerMasked == 0xA0) {
         // poly aftertouch
-        var note = bufferToNumber(readStream.read(1));
+        var note = firstDataByte;
         var pressure = bufferToNumber(readStream.read(1));
-        bytesRead += 2;
+        bytesRead++;
 
         var noteData = { "type" : "polyAftertouch", "time" : totalDeltaTime, "note" : note, "pressure" : pressure };
         trackData.push(noteData);
     }
     else if (headerMasked == 0xB0) {
         // CC
-        var cc = bufferToNumber(readStream.read(1));
+        var cc = firstDataByte;
         var value = bufferToNumber(readStream.read(1));
-        bytesRead += 2;
+        bytesRead++;
 
         var noteData = { "type" : "CC", "time" : totalDeltaTime, "CC" : cc, "value" : value };
         trackData.push(noteData);
     }
     else if (headerMasked == 0xC0) {
         // program change
-        var program = bufferToNumber(readStream.read(1));
-        bytesRead += 1;
+        var program = firstDataByte;
 
         var noteData = { "type" : "programChange", "time" : totalDeltaTime, "program" : program };
         trackData.push(noteData);
     }
     else if (headerMasked == 0xD0) {
         // aftertouch
-        var pressure = bufferToNumber(readStream.read(1));
-        bytesRead += 1;
+        var pressure = firstDataByte;
 
         var noteData = { "type" : "aftertouch", "time" : totalDeltaTime, "pressure" : pressure };
         trackData.push(noteData);
     }
     else if (headerMasked == 0xE0) {
         // pitchwheel
-        var lsb = bufferToNumber(readStream.read(1));
+        var lsb = firstDataByte;
         var msb = bufferToNumber(readStream.read(1));
-        bytesRead += 2;
+        bytesRead++;
 
         var pitchwheelValue = (msb << 7) | lsb;
 
@@ -166,11 +189,15 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
         trackData.push(noteData);
     }
 
+    runningStatus = status;
+
     return bytesRead;
 }
 
 function readMetaEvent(readStream, trackData, totalDeltaTime) {
     var bytesRead = 0;
+    // meta events clear running status
+    runningStatus = null;
 
     // meta event
     var metaHeader = bufferToNumber(readStream.read(1));
@@ -212,8 +239,16 @@ function readMetaEvent(readStream, trackData, totalDeltaTime) {
     return bytesRead;
 }
 
-function readSysex(readStream, trackData, totalDeltaTime) {
+function readSysex(readStream, trackData, totalDeltaTime, headerByte) {
     var bytesRead = 0;
+
+    if (headerByte < 0xF8) {
+        // sysex clears running status
+        runningStatus = null;
+    }
+    else {
+        // sys real time (doesn't clear running status)
+    }
 
     // read our sysex from the stream, we don't put it in the track data for now
     var length = readVariableLength(readStream);
