@@ -122,7 +122,7 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
 
     var headerMasked = status & 0xF0;
 
-    if (!firstDataByte) {
+    if (firstDataByte === null) {
         firstDataByte = bufferToNumber(readStream.read(1));
         bytesRead++;
     }
