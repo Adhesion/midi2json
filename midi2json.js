@@ -8,6 +8,8 @@ var tempTrackName = "";
 // tempo is represented as microseconds per quarter note
 // this is 120bpm, which is the default for MIDI with unspecified tempo
 var tempo = 500000.0;
+var overrideTempoBPM = 0.0;
+var overrideTempo = 0.0;
 var division = 0;
 var outputDict = {};
 var runningStatus = null;
@@ -270,9 +272,15 @@ function readSysex(trackData, totalDeltaTime, headerByte) {
     return bytesRead;
 }
 
-if (process.argv.length !== 4) {
-    console.error("Usage: node midi2json.js [midi file] [json file]");
+if (process.argv.length < 4 || process.argv.length > 5) {
+    console.error("Usage: node midi2json.js [midi file] [json file] [override tempo in BPM, optional]");
     process.exit(1);
+}
+
+if (process.argv.length == 5) {
+    // convert beats/min to us/beat
+    overrideTempoBPM = parseFloat(process.argv[4]);
+    overrideTempo = 60000000.0 / overrideTempoBPM;
 }
 
 bytes = fs.readFileSync(process.argv[2]);
@@ -301,6 +309,9 @@ var numTracks = bufferToNumber(headerVals[1]);
 console.log("Number of tracks: " + numTracks);
 division = bufferToNumber(headerVals[2]);
 console.log("Time division: " + division);
+if (overrideTempo > 0.0) {
+    console.log("Override tempo: " + overrideTempoBPM + " BPM");
+}
 
 // 1 in the high bit means SMPTE time format
 if (division & 0x8000) {
@@ -315,6 +326,9 @@ for (var iTrack = 0; iTrack < numTracks; iTrack++) {
 // Figure out how many milliseconds are in each tick:
 // tempo is microseconds per quarter note & division is ticks per
 // quarter note, so tempo / division = us/tick
+if (overrideTempo > 0.0) {
+    tempo = overrideTempo;
+}
 var msPerTick = (tempo / division) / 1000.0;
 
 // Add a helper "timeMS" to each event for event time in milliseconds
