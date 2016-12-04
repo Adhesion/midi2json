@@ -1,5 +1,5 @@
 /*
- * This script parses a MIDI file and writes the data (currently only note on/note off) to a json file.
+ * This script parses a MIDI file and writes the events to a json file.
  */
 
 var headerChunk = "MThd";
@@ -12,6 +12,8 @@ var division = 0;
 var outputDict = {};
 var runningStatus = null;
 var fs = require('fs');
+var bytes;
+var byteIndex = 0;
 
 /*
  * Convert a Buffer into a number, assuming it's using hex encoding.
@@ -22,17 +24,26 @@ function bufferToNumber(buffer) {
 }
 
 /*
+ * Read numBytes bytes (as a Buffer) from our MIDI file.
+ */
+function readBytes(numBytes) {
+    var buf = bytes.slice(byteIndex, byteIndex + numBytes);
+    byteIndex += numBytes;
+    return buf;
+}
+
+/*
  * Read a variable-length MIDI data quantity from the given stream.
  * Variable-length quantities are 1-4 bytes - a 1 in the highest order
  * bit of a read byte determines whether we have more bytes to read.
  * The actual value is determined by the lower 7 bits of each byte put together.
  * Returns an array of the value and the number of bytes read from the stream.
  */
-function readVariableLength(readStream) {
+function readVariableLength() {
     var retVal = 0;
     var continueMask = 0x80;
     var valueMask = 0x7F;
-    var buf = readStream.read(1);
+    var buf = readBytes(1);
     var byte = bufferToNumber(buf);
     var byteCount = 0;
 
@@ -41,7 +52,7 @@ function readVariableLength(readStream) {
     while ((byte & continueMask) && byteCount < 3) {
         retVal <<= 7;
         retVal |= byte & valueMask;
-        var inbuf = readStream.read(1);
+        var inbuf = readBytes(1);
         byte = bufferToNumber(inbuf);
         byteCount++;
     }
@@ -59,14 +70,14 @@ function readVariableLength(readStream) {
  * chunk at the beginning, the track length, and then a series of events
  * in the stream.
  */
-function readTrack(readStream, iTrack) {
-    var track = readStream.read(4);
+function readTrack(iTrack) {
+    var track = readBytes(4);
     if (track != trackChunk) {
         console.error("No track header!");
         return;
     }
 
-    var trackLength = bufferToNumber(readStream.read(4));
+    var trackLength = bufferToNumber(readBytes(4));
     var totalDeltaTime = 0;
     tempTrackName = "";
     var trackNameDefault = "Track " + iTrack;
@@ -74,22 +85,22 @@ function readTrack(readStream, iTrack) {
 
     while (trackLength > 0) {
         var bytesRead = 0;
-        var deltaTime = readVariableLength(readStream, bytesRead);
+        var deltaTime = readVariableLength(bytesRead);
         totalDeltaTime += deltaTime[0];
         bytesRead += deltaTime[1];
 
-        var header = readStream.read(1);
+        var header = readBytes(1);
         var headerByte = bufferToNumber(header);
         bytesRead++;
 
         if (headerByte == 0xFF) {
-            bytesRead += readMetaEvent(readStream, trackData, totalDeltaTime);
+            bytesRead += readMetaEvent(trackData, totalDeltaTime);
         }
         else if ((headerByte & 0xF0) == 0xF0) {
-            bytesRead += readSysex(readStream, trackData, totalDeltaTime, headerByte);
+            bytesRead += readSysex(trackData, totalDeltaTime, headerByte);
         }
         else {
-            bytesRead += readEvent(readStream, trackData, totalDeltaTime, headerByte);
+            bytesRead += readEvent(trackData, totalDeltaTime, headerByte);
         }
 
         trackLength -= bytesRead;
@@ -101,7 +112,7 @@ function readTrack(readStream, iTrack) {
     outputDict[tempTrackName] = trackData;
 }
 
-function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
+function readEvent(trackData, totalDeltaTime, headerByte) {
     var bytesRead = 0;
     var status = headerByte;
     var usedRunningStatus = false;
@@ -122,15 +133,16 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
 
     var headerMasked = status & 0xF0;
 
+    // Read our first data byte, if we don't already have it due to running status
     if (firstDataByte === null) {
-        firstDataByte = bufferToNumber(readStream.read(1));
+        firstDataByte = bufferToNumber(readBytes(1));
         bytesRead++;
     }
 
     if (headerMasked == 0x80) {
         // note off
         var note = firstDataByte;
-        var velocity = bufferToNumber(readStream.read(1));
+        var velocity = bufferToNumber(readBytes(1));
         bytesRead++;
 
         var noteData = { "type" : "noteOff", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
@@ -139,7 +151,7 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     else if (headerMasked == 0x90) {
         // note on
         var note = firstDataByte;
-        var velocity = bufferToNumber(readStream.read(1));
+        var velocity = bufferToNumber(readBytes(1));
         bytesRead++;
 
         var noteData = { "type" : "noteOn", "time" : totalDeltaTime, "note" : note, "velocity" : velocity };
@@ -148,7 +160,7 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     else if (headerMasked == 0xA0) {
         // poly aftertouch
         var note = firstDataByte;
-        var pressure = bufferToNumber(readStream.read(1));
+        var pressure = bufferToNumber(readBytes(1));
         bytesRead++;
 
         var noteData = { "type" : "polyAftertouch", "time" : totalDeltaTime, "note" : note, "pressure" : pressure };
@@ -157,7 +169,7 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     else if (headerMasked == 0xB0) {
         // CC
         var cc = firstDataByte;
-        var value = bufferToNumber(readStream.read(1));
+        var value = bufferToNumber(readBytes(1));
         bytesRead++;
 
         var noteData = { "type" : "CC", "time" : totalDeltaTime, "CC" : cc, "value" : value };
@@ -180,7 +192,7 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     else if (headerMasked == 0xE0) {
         // pitchwheel
         var lsb = firstDataByte;
-        var msb = bufferToNumber(readStream.read(1));
+        var msb = bufferToNumber(readBytes(1));
         bytesRead++;
 
         var pitchwheelValue = (msb << 7) | lsb;
@@ -194,20 +206,20 @@ function readEvent(readStream, trackData, totalDeltaTime, headerByte) {
     return bytesRead;
 }
 
-function readMetaEvent(readStream, trackData, totalDeltaTime) {
+function readMetaEvent(trackData, totalDeltaTime) {
     var bytesRead = 0;
     // meta events clear running status
     runningStatus = null;
 
     // meta event
-    var metaHeader = bufferToNumber(readStream.read(1));
+    var metaHeader = bufferToNumber(readBytes(1));
     bytesRead++;
-    var metaLengthRet = readVariableLength(readStream);
+    var metaLengthRet = readVariableLength();
     var metaLength = metaLengthRet[0];
     bytesRead += metaLengthRet[1];
 
     if (metaLength > 0) {
-        var metaData = readStream.read(metaLength);
+        var metaData = readBytes(metaLength);
         var metaValue = bufferToNumber(metaData);
         bytesRead += metaLength;
 
@@ -239,7 +251,7 @@ function readMetaEvent(readStream, trackData, totalDeltaTime) {
     return bytesRead;
 }
 
-function readSysex(readStream, trackData, totalDeltaTime, headerByte) {
+function readSysex(trackData, totalDeltaTime, headerByte) {
     var bytesRead = 0;
 
     if (headerByte < 0xF8) {
@@ -251,8 +263,8 @@ function readSysex(readStream, trackData, totalDeltaTime, headerByte) {
     }
 
     // read our sysex from the stream, we don't put it in the track data for now
-    var length = readVariableLength(readStream);
-    readStream.read(length[0]);
+    var length = readVariableLength();
+    readBytes(length[0]);
     bytesRead += length[0] + length[1];
 
     return bytesRead;
@@ -263,68 +275,62 @@ if (process.argv.length !== 4) {
     process.exit(1);
 }
 
-var readStream = fs.createReadStream(process.argv[2]);
-readStream.on("readable", function() {
-    readStream.setEncoding("ascii");
+bytes = fs.readFileSync(process.argv[2]);
 
-    var header = readStream.read(4);
-    // We can get a readable event at the end of the file, so if we read and got null,
-    // that's probably what happened, so we're done
-    if (!header) {
-        return;
-    }
-    else if (header != headerChunk) {
-        console.error("No header!");
-        process.exit(1);
-    }
+var header = readBytes(4);
+if (!header) {
+    console.error("Failed to read header!");
+    process.exit(1);
+}
+else if (header != headerChunk) {
+    console.error("Invalid header! (read " + header.toString() + ", should be MThd)");
+    process.exit(1);
+}
 
-    var headerLength = bufferToNumber(readStream.read(4));
+var headerLength = bufferToNumber(readBytes(4));
 
-    var headerVals = [];
-    for (var i = 0; i < headerLength / 2; i++) {
-        var headerVal = readStream.read(2);
-        headerVals[i] = headerVal;
-    }
+var headerVals = [];
+for (var i = 0; i < headerLength / 2; i++) {
+    var headerVal = readBytes(2);
+    headerVals[i] = headerVal;
+}
 
-    var format = bufferToNumber(headerVals[0]);
-    console.log("format: " + format);
-    var numTracks = bufferToNumber(headerVals[1]);
-    console.log("num tracks: " + numTracks);
-    division = bufferToNumber(headerVals[2]);
-    console.log("division: " + division);
+var format = bufferToNumber(headerVals[0]);
+console.log("MIDI format: " + format);
+var numTracks = bufferToNumber(headerVals[1]);
+console.log("Number of tracks: " + numTracks);
+division = bufferToNumber(headerVals[2]);
+console.log("Time division: " + division);
 
-    // 1 in the high bit means SMPTE time format
-    if (division & 0x8000) {
-        console.error("SMPTE time format not supported!");
-        process.exit(1);
-    }
+// 1 in the high bit means SMPTE time format
+if (division & 0x8000) {
+    console.error("SMPTE time format not supported!");
+    process.exit(1);
+}
 
-    for (var iTrack = 0; iTrack < numTracks; iTrack++) {
-        readTrack(readStream, iTrack);
-    }
-});
+for (var iTrack = 0; iTrack < numTracks; iTrack++) {
+    readTrack(iTrack);
+}
 
-readStream.on("end", function() {
-    console.log("Done!");
+// Figure out how many milliseconds are in each tick:
+// tempo is microseconds per quarter note & division is ticks per
+// quarter note, so tempo / division = us/tick
+var msPerTick = (tempo / division) / 1000.0;
 
-    // Figure out how many milliseconds are in each tick:
-    // tempo is microseconds per quarter note & division is ticks per
-    // quarter note, so tempo / division = us/tick
-    var msPerTick = (tempo / division) / 1000.0;
+// Add a helper "timeMS" to each event for event time in milliseconds
+for (var track in outputDict) {
+    var numEvents = outputDict[track].length;
+    for (var i = 0; i < numEvents; i++) {
+        var event = outputDict[track][i];
+        var time = event["time"];
 
-    // Add a helper "timeMS" to each event for event time in milliseconds
-    for (var track in outputDict) {
-        var numEvents = outputDict[track].length;
-        for (var i = 0; i < numEvents; i++) {
-            var event = outputDict[track][i];
-            var time = event["time"];
-
-            if (time !== null) {
-                var timeMS = time * msPerTick;
-                event["timeMS"] = timeMS;
-            }
+        if (time !== null) {
+            var timeMS = time * msPerTick;
+            event["timeMS"] = timeMS;
         }
     }
+}
 
-    fs.writeFileSync(process.argv[3], JSON.stringify(outputDict, null, 4));
-});
+fs.writeFileSync(process.argv[3], JSON.stringify(outputDict, null, 4));
+
+console.log("Done!");
